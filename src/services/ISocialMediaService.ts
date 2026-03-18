@@ -27,10 +27,21 @@ export interface IMediaData {
     caption: string;
     mediaType: string;
     mediaUrl: string;
+    thumbnailUrl?: string;
     permalink: string;
     timestamp: Date;
     likeCount: number;
     commentCount: number;
+    viewCount?: number;
+    reach?: number;
+    impressions?: number;
+    saves?: number;
+    shares?: number;
+    totalInteractions?: number;
+    views?: number;
+    engagementRateStandard?: string;
+    engagementRateEfficiency?: string;
+    mediaProductType?: 'FEED' | 'REELS' | 'STORY' | string;
 }
 
 export interface IAudienceDemographics {
@@ -62,9 +73,9 @@ export interface ISocialMediaService {
     ): Promise<{ media: IMediaData[]; nextCursor?: string }>;
 
     /**
-     * Fetch insights for a specific media
+     * Fetch insights for a specific media item (Lazy loaded)
      */
-    getMediaInsights(mediaId: string, accessToken: string): Promise<IMediaInsights>;
+    getMediaInsights(userId: string, accessToken: string, mediaId: string, mediaType: string, followerCount?: number): Promise<Partial<IMediaData>>;
 
     /**
      * Fetch audience demographics

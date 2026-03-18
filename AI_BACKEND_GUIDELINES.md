@@ -247,22 +247,20 @@ Benefits:
 
 ---
 
-# 9. Logging
+# 9. Logging & Traceability
 
-Use structured logging.
+Every request must be traced and logged for performance and debugging.
 
-Preferred:
+### Global Request Logger
+* **Trace ID**: A unique `randomUUID()` must be generated for every request.
+* **Execution Time**: Track precise execution time using `process.hrtime()`.
+* **Headers**: Return `X-Trace-ID` in the response headers.
+* **Middleware**: Use `loggerMiddleware` globally in `index.ts`.
 
-```
-pino
-winston
-```
-
-Never log:
-
-* passwords
-* tokens
-* personal data
+### Logging Rules
+* Use structured logging format.
+* **Never log**: passwords, tokens, or personal sensitive data.
+* Preferred: `pino` or `winston` for production. Currently using standard `console.log` with structured prefixes for convenience.
 
 ---
 
@@ -328,6 +326,7 @@ Before finalizing backend code AI must verify:
 ✔ Response structure consistent
 ✔ Pagination implemented
 ✔ Proper error handling
+✔ Global logging & Trace ID implementation verified
 
 ---
 

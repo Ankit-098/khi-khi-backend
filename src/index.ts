@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { transparencyMiddleware } from './middleware/transparency.middleware';
+import { loggerMiddleware } from './middleware/logger.middleware';
 import authRoutes from './routes/auth.routes';
 import campaignRoutes from './routes/campaign.routes';
 import profileRoutes from './routes/profile.routes';
@@ -14,6 +15,7 @@ const PORT = process.env.PORT || 3001;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/creator-ecosystem';
 
 // Middleware
+app.use(loggerMiddleware);
 app.use(cors());
 app.use(express.json());
 app.use(transparencyMiddleware);

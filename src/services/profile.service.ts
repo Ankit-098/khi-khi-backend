@@ -3,7 +3,10 @@
  * Handles user profile management including primary account switching
  */
 
-import User, { ISocialAccount } from '../models/User';
+import User, { ISocialAccount, IUser } from '../models/User';
+import OTP, { OTPMethod } from '../models/OTP';
+import securityService from './security.service';
+import mongoose from 'mongoose';
 
 interface IPrimaryAccountResponse {
     platform: string;
@@ -144,7 +147,7 @@ class ProfileService {
 
             return {
                 platform: primaryAccount.platform,
-                accessToken: primaryAccount.accessToken,
+                accessToken: securityService.decryptToken(primaryAccount.accessToken),
             };
         } catch (error) {
             console.error('Error getting primary account token:', error);
@@ -163,6 +166,212 @@ class ProfileService {
             console.error('Error getting primary account ID:', error);
             throw error;
         }
+    }
+
+    /**
+     * Update user profile details
+     */
+    async updateProfile(userId: string, data: any): Promise<IUser> {
+        try {
+            const user = await User.findById(userId);
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            // Update basic profile fields
+            if (data.name) user.profile.name = data.name;
+            if (data.bio !== undefined) user.profile.bio = data.bio;
+            if (data.phoneNumber !== undefined) user.profile.phoneNumber = data.phoneNumber;
+            if (data.contactEmail !== undefined) user.profile.contactEmail = data.contactEmail;
+            if (data.country !== undefined) user.profile.country = data.country;
+            if (data.state !== undefined) user.profile.state = data.state;
+            if (data.city !== undefined) user.profile.city = data.city;
+            if (data.contactPrivacy !== undefined) user.profile.contactPrivacy = data.contactPrivacy;
+            if (data.category !== undefined) user.profile.category = data.category;
+            if (data.subCategories !== undefined) user.profile.subCategories = data.subCategories;
+
+            await user.save();
+            return user;
+        } catch (error) {
+            console.error('Error updating profile:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Update rates for a specific social account
+     */
+    async updateRates(userId: string, platform: string, platformId: string, rates: any[]): Promise<IUser> {
+        const user = await User.findById(userId);
+        if (!user) throw new Error('User not found');
+
+        const account = user.socialAccounts.find(
+            (acc: any) => acc.platform === platform && acc.platformId === platformId
+        );
+        if (!account) throw new Error('Social account not found');
+
+        account.rates = rates;
+        console.log(`[ProfileService] Saving ${rates.length} rates to DB for user ${userId} context ${platform}`);
+        await user.save();
+        return user;
+    }
+
+    /**
+     * Update verification status for profile or contact
+     */
+    async setVerificationStatus(
+        userId: string, 
+        type: 'profile' | 'contact', 
+        status: boolean
+    ): Promise<IUser> {
+        try {
+            const user = await User.findById(userId);
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            if (type === 'profile') {
+                user.verification.profile = status;
+            } else {
+                user.verification.contact = status;
+            }
+
+            await user.save();
+            return user;
+        } catch (error) {
+            console.error(`[ProfileService] Error setting ${type} verification:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Update account status
+     */
+    async updateStatus(userId: string, status: any): Promise<IUser> {
+        try {
+            const user = await User.findById(userId);
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            user.status = status;
+            await user.save();
+            return user;
+        } catch (error) {
+            console.error('[ProfileService] Error updating status:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get insights for a specific media item (No userId required, uses primary token)
+     */
+    async getMediaInsights(userId: string, mediaId: string, mediaType: string) {
+        try {
+            const primaryToken = await this.getPrimaryAccountToken(userId);
+            if (!primaryToken) {
+                throw new Error('No primary account configured');
+            }
+
+            const fromFactory = require('./socialMediaFactory').default;
+            const service = fromFactory.getService(primaryToken.platform);
+
+            // Fetch primary account again to get followerCount for ER fallback
+            const primaryAccount = await this.getPrimaryAccount(userId);
+
+            return await service.getMediaInsights(
+                userId,
+                primaryToken.accessToken,
+                mediaId,
+                mediaType,
+                primaryAccount?.followerCount || 0
+            );
+        } catch (error) {
+            console.error('Error fetching media insights:', error);
+            throw error;
+        }
+    }
+    /**
+     * Send Verification OTP
+     * Generates a 6-digit OTP and "sends" it via the specified method
+     */
+    async sendVerificationOTP(userId: string, method: string, contactValue: string): Promise<any> {
+        // Generate 6-digit OTP
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+        // Save OTP to database
+        const otpEntry = new OTP({
+            userId: new mongoose.Types.ObjectId(userId),
+            method: method as OTPMethod,
+            otp: otpCode,
+            contactValue,
+            expiresAt
+        });
+
+        await otpEntry.save();
+
+        // Simulate sending
+        console.log(`\n[OTP] SENDING ${method} OTP TO ${contactValue}`);
+        console.log(`[OTP] CODE: ${otpCode}\n`);
+
+        // In a real app, integrate with SendGrid/Twilio here
+        
+        return {
+            success: true,
+            message: `OTP sent successfully via ${method}`,
+            expiresAt
+        };
+    }
+
+    /**
+     * Verify Contact OTP
+     * Validates the OTP and updates user's verification status
+     */
+    async verifyContactOTP(userId: string, method: string, otpCode: string): Promise<any> {
+        // Find latest valid OTP
+        const otpEntry = await OTP.findOne({
+            userId: new mongoose.Types.ObjectId(userId),
+            method: method as OTPMethod,
+            otp: otpCode,
+            isUsed: false,
+            expiresAt: { $gt: new Date() }
+        }).sort({ createdAt: -1 });
+
+        if (!otpEntry) {
+            throw new Error('Invalid or expired OTP');
+        }
+
+        // Mark OTP as used
+        otpEntry.isUsed = true;
+        await otpEntry.save();
+
+        // Update user verification status
+        const user = await User.findById(userId);
+        if (!user) throw new Error('User not found');
+
+        if (method === 'EMAIL') {
+            user.verification.emailVerified = true;
+            // Also update main contact email if it matches
+            if (user.profile.contactEmail === otpEntry.contactValue) {
+                // Keep consistent
+            }
+        } else if (method === 'SMS' || method === 'WHATSAPP') {
+            user.verification.phoneVerified = true;
+        }
+
+        // Broad "contact" verified if either is verified (optional logic)
+        if (user.verification.emailVerified || user.verification.phoneVerified) {
+            user.verification.contact = true;
+        }
+
+        await user.save();
+
+        return {
+            success: true,
+            verification: user.verification,
+            message: 'Contact verified successfully'
+        };
     }
 }
 

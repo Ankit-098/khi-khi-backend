@@ -5,10 +5,11 @@
 
 import { Request, Response } from 'express';
 import axios from 'axios';
-import User, { UserRole } from '../models/User';
+import User, { UserRole, Platform } from '../models/User';
 import { generateToken } from '../middleware/jwt.middleware';
 import profileService from '../services/profile.service';
 import instagramService from '../services/instagram.service';
+import { dateUtils } from '../utils/date.utils';
 
 class AuthController {
     /**
@@ -20,13 +21,15 @@ class AuthController {
         try {
             console.log('\n========== INIT AUTH START ==========');
             console.log('📝 Init Step 1: Extracting configuration...');
-            
+
             const appId = process.env.INSTAGRAM_APP_ID;
             const redirectUri = process.env.INSTAGRAM_REDIRECT_URI;
+            const { appRedirectUrl } = req.body;
 
             console.log('📝 Init Step 1: appId exists?', !!appId, appId ? `(${appId.substring(0, 5)}...)` : '');
             console.log('📝 Init Step 1: redirectUri exists?', !!redirectUri);
             console.log('📝 Init Step 1: redirectUri value:', redirectUri);
+            console.log('📝 Init Step 1: appRedirectUrl extracted:', appRedirectUrl);
 
             if (!appId || !redirectUri) {
                 console.log('❌ Init Step 1: Missing configuration');
@@ -51,9 +54,17 @@ class AuthController {
             console.log('📝 Init Step 2: Scopes:', scopes);
             console.log('📝 Init Step 3: Building authorization URL...');
 
+            // Handle State for Deep Linking (appRedirectUrl passing)
+            let stateParam = '';
+            if (appRedirectUrl) {
+                const stateObj = { appRedirectUrl };
+                const stateBase64 = Buffer.from(JSON.stringify(stateObj)).toString('base64');
+                stateParam = `&state=${stateBase64}`;
+            }
+
             // ✅ Use official Instagram OAuth endpoint (from Business Login docs)
             // NOT Facebook endpoint - must use instagram.com
-            const authUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code`;
+            const authUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code${stateParam}`;
 
             console.log('✅ Init Step 3: Authorization URL generated');
             console.log('🔐 OAuth URL:', authUrl.substring(0, 100) + '...');
@@ -70,7 +81,7 @@ class AuthController {
             console.error('❌ Error in initInstagramAuth:', error.message);
             // console.error('❌ Full error:', error);
             console.log('========== INIT AUTH FAILED ==========\n');
-            
+
             res.status(500).json({
                 success: false,
                 error: 'INIT_AUTH_FAILED',
@@ -90,7 +101,7 @@ class AuthController {
             console.log('📝 Step 0: Received code:', code ? `${String(code).substring(0, 20)}...` : 'undefined');
             console.log('📝 Step 0: Code type:', typeof code);
             console.log('📝 Step 0: Code length:', code ? String(code).length : 'N/A');
-            
+
             if (!code) {
                 console.log('❌ Step 0: Code is missing or empty');
                 res.status(400).json({
@@ -103,10 +114,11 @@ class AuthController {
 
             console.log('✅ Step 0: Code validation passed');
             console.log('📝 Step 1: Starting token exchange...');
-            
+
             // ✅ Step 1: Exchange code for access token (includes long-lived token generation)
             const tokenResponse = await this.exchangeCodeForToken(code);
             const { access_token, user_id, expires_at } = tokenResponse;
+            const platformId = String(user_id); // ✅ Ensure platformId is string for consistent matching
 
             console.log('✅ Step 1: Token exchange successful');
             console.log('📝 Step 2: access_token received:', access_token ? `${access_token.substring(0, 20)}...` : 'undefined');
@@ -125,12 +137,12 @@ class AuthController {
 
             console.log('✅ Step 2: Token validation passed');
             console.log('📝 Step 3: Encrypting token for storage...');
-            
+
             // Encrypt token before storing
             const encryptedToken = instagramService.encryptToken(access_token);
             console.log('✅ Step 3: Token encrypted successfully');
             console.log('📝 Step 4: Fetching Instagram user info...');
-            
+
             // Step 2: Get Instagram user info using the service
             const instagramUser = await instagramService.getMe(access_token);
 
@@ -152,10 +164,20 @@ class AuthController {
 
             console.log('✅ Step 4: User info validation passed');
             console.log('📝 Step 5: Finding or creating user in database...');
-            
+
             // Step 3: Find or create user
             const email = instagramUser.email || `${instagramUser.username}@instagram.local`;
-            let user = await User.findOne({ email });
+
+            // PRIORITY 1: Find by Instagram ID directly
+            let user = await User.findOne({
+                'socialAccounts.platform': Platform.INSTAGRAM,
+                'socialAccounts.platformId': platformId
+            });
+
+            // PRIORITY 2: Fallback to email if not found by Instagram ID
+            if (!user) {
+                user = await User.findOne({ email });
+            }
 
             if (!user) {
                 console.log('📝 Step 5: User not found, creating new user with email:', email);
@@ -171,7 +193,7 @@ class AuthController {
                     },
                     socialAccounts: [
                         {
-                            platform: 'INSTAGRAM',
+                            platform: Platform.INSTAGRAM,
                             platformId: user_id,
                             username: instagramUser.username,
                             displayName: instagramUser.name,
@@ -196,7 +218,7 @@ class AuthController {
                 console.log('📝 Step 5: User found, ID:', user._id.toString());
                 // Add Instagram account if not already connected
                 const existingAccount = user.socialAccounts.find(
-                    acc => acc.platform === 'INSTAGRAM' && acc.platformId === user_id
+                    acc => acc.platform === Platform.INSTAGRAM && acc.platformId === platformId
                 );
 
                 if (existingAccount) {
@@ -207,11 +229,12 @@ class AuthController {
                     existingAccount.followerCount = instagramUser.followers_count || 0;
                     existingAccount.followingCount = instagramUser.follows_count || 0;
                     existingAccount.mediaCount = instagramUser.media_count || 0;
+                    existingAccount.lastLogin = new Date(); // ✅ Update account specific login time
                 } else {
                     console.log('📝 Step 5: Adding new Instagram account to existing user');
                     // Add new Instagram account
                     user.socialAccounts.push({
-                        platform: 'INSTAGRAM',
+                        platform: Platform.INSTAGRAM,
                         platformId: user_id,
                         username: instagramUser.username,
                         displayName: instagramUser.name,
@@ -225,14 +248,15 @@ class AuthController {
                         tokenExpiry: expires_at,  // ✅ Track token expiry (60 days from now)
                         permissions: ['instagram_business_basic'],
                         accountConnectedAt: new Date(),
+                        lastLogin: new Date(), // ✅ Initialize last login
                         isPrimary: false  // Set as primary if this is first account
                     });
 
                     // Set as primary if no primary account exists
                     await profileService.setAsPrimaryIfFirstAccount(
                         user._id.toString(),
-                        'INSTAGRAM',
-                        user_id
+                        Platform.INSTAGRAM,
+                        platformId
                     );
                 }
 
@@ -241,13 +265,14 @@ class AuthController {
                     user.authMethods.push('INSTAGRAM');
                 }
 
+                user.lastLogin = new Date(); // Update last login time
                 await user.save();
                 console.log('✅ Step 5: User updated successfully');
             }
 
             console.log('✅ Step 5: Database operations complete');
             console.log('📝 Step 6: Generating JWT token...');
-            
+
             // Step 4: Generate JWT token
             const token = generateToken(
                 user._id.toString(),
@@ -438,18 +463,18 @@ class AuthController {
                 return;
             }
         } catch (error: any) {
-            const errorMsg = error.response?.data?.error_message || 
-                           error.response?.data?.message || 
-                           error.message || 
-                           'Unknown error';
-            
+            const errorMsg = error.response?.data?.error_message ||
+                error.response?.data?.message ||
+                error.message ||
+                'Unknown error';
+
             console.error('❌ ERROR in handleInstagramCallback:', errorMsg);
             // console.error('❌ Full error:', error);
-            
+
             if (error.response?.data) {
                 console.error('📋 Details:', error.response.data);
             }
-            
+
             res.status(500).json({
                 success: false,
                 error: 'CALLBACK_FAILED',
@@ -466,21 +491,28 @@ class AuthController {
     async processInstagramCallback(code: string): Promise<any> {
         console.log('\n========== CALLBACK PROCESSOR START ==========');
         console.log('📝 Step 0: Received code:', code ? `${String(code).substring(0, 20)}...` : 'undefined');
-        
+
         if (!code) {
             throw new Error('OAuth authorization code is required');
         }
 
         console.log('✅ Step 0: Code validation passed');
         console.log('📝 Step 1: Starting token exchange...');
-        
+
         // Step 1: Exchange code for access token
         const tokenResponse = await this.exchangeCodeForToken(code);
-        const { access_token, user_id, expires_at } = tokenResponse;
+        const { access_token, user_id, expires_at, permissions: rawPermissions } = tokenResponse;
+        const platformId = String(user_id); // ✅ Ensure platformId is string
+
+        // Normalize permissions to an array of strings
+        const permissions: string[] = Array.isArray(rawPermissions) 
+            ? rawPermissions 
+            : (typeof rawPermissions === 'string' ? rawPermissions.split(',') : []);
 
         console.log('✅ Step 1: Token exchange successful');
         console.log('📝 Step 2: access_token received:', access_token ? `${access_token.substring(0, 20)}...` : 'undefined');
         console.log('📝 Step 2: user_id received:', user_id);
+        console.log('📝 Step 2: Permissions granted:', permissions);
 
         if (!access_token || !user_id) {
             throw new Error('Failed to obtain access token from Instagram');
@@ -488,12 +520,12 @@ class AuthController {
 
         console.log('✅ Step 2: Token validation passed');
         console.log('📝 Step 3: Encrypting token for storage...');
-        
+
         // Encrypt token before storing
         const encryptedToken = instagramService.encryptToken(access_token);
         console.log('✅ Step 3: Token encrypted successfully');
         console.log('📝 Step 4: Fetching Instagram user info...');
-        
+
         // Step 2: Get Instagram user info
         const instagramUser = await instagramService.getMe(access_token);
 
@@ -509,10 +541,20 @@ class AuthController {
 
         console.log('✅ Step 4: User info validation passed');
         console.log('📝 Step 5: Finding or creating user in database...');
-        
+
         // Step 3: Find or create user
         const email = instagramUser.email || `${instagramUser.username}@instagram.local`;
-        let user = await User.findOne({ email });
+
+        // PRIORITY 1: Find by Instagram ID directly
+        let user = await User.findOne({
+            'socialAccounts.platform': Platform.INSTAGRAM,
+            'socialAccounts.platformId': platformId
+        });
+
+        // PRIORITY 2: Fallback to email if not found by Instagram ID
+        if (!user) {
+            user = await User.findOne({ email });
+        }
 
         if (!user) {
             console.log('📝 Step 5: User not found, creating new user with email:', email);
@@ -527,7 +569,7 @@ class AuthController {
                 },
                 socialAccounts: [
                     {
-                        platform: 'INSTAGRAM',
+                        platform: Platform.INSTAGRAM,
                         platformId: user_id,
                         username: instagramUser.username,
                         displayName: instagramUser.name,
@@ -539,8 +581,8 @@ class AuthController {
                         isBusinessAccount: true,
                         accessToken: encryptedToken,
                         tokenExpiry: expires_at,
-                        permissions: ['instagram_business_basic'],
-                        accountConnectedAt: new Date(),
+                        permissions: permissions,
+                        accountConnectedAt: dateUtils.now().toDate(),
                         isPrimary: true
                     }
                 ]
@@ -551,17 +593,19 @@ class AuthController {
         } else {
             console.log('📝 Step 5: User found, ID:', user._id.toString());
             const existingAccount = user.socialAccounts.find(
-                acc => acc.platform === 'INSTAGRAM' && acc.platformId === user_id
+                acc => acc.platform === Platform.INSTAGRAM && acc.platformId === platformId
             );
 
             if (existingAccount) {
                 console.log('📝 Step 5b: Instagram account already connected, updating token...');
                 existingAccount.accessToken = encryptedToken;
                 existingAccount.tokenExpiry = expires_at;
+                existingAccount.permissions = permissions; // Update permissions as well
+                existingAccount.lastLogin = dateUtils.now().toDate(); // ✅ Update last login
             } else {
                 console.log('📝 Step 5b: Instagram account not found, adding new account...');
                 user.socialAccounts.push({
-                    platform: 'INSTAGRAM',
+                    platform: Platform.INSTAGRAM,
                     platformId: user_id,
                     username: instagramUser.username,
                     displayName: instagramUser.name,
@@ -573,19 +617,21 @@ class AuthController {
                     isBusinessAccount: true,
                     accessToken: encryptedToken,
                     tokenExpiry: expires_at,
-                    permissions: ['instagram_business_basic'],
-                    accountConnectedAt: new Date(),
+                    permissions: permissions,
+                    accountConnectedAt: dateUtils.now().toDate(),
+                    lastLogin: dateUtils.now().toDate(), // ✅ Initialize last login
                     isPrimary: user.socialAccounts.length === 0
                 } as any);
             }
 
+            user.lastLogin = dateUtils.now().toDate(); // Update last login time
             await user.save();
             console.log('✅ Step 5b: User updated with Instagram account');
         }
 
         console.log('✅ Step 6: User in database ready');
         console.log('📝 Step 7: Generating JWT token...');
-        
+
         // Step 4: Generate JWT token
         const token = generateToken(
             user._id.toString(),
@@ -622,7 +668,7 @@ class AuthController {
         try {
             console.log('\n========== TOKEN EXCHANGE START ==========');
             console.log('📝 Exchange Step 1: Extracting environment variables...');
-            
+
             const appId = process.env.INSTAGRAM_APP_ID;
             const appSecret = process.env.INSTAGRAM_APP_SECRET;
             const redirectUri = process.env.INSTAGRAM_REDIRECT_URI;
@@ -639,7 +685,7 @@ class AuthController {
 
             console.log('✅ Exchange Step 1: All configuration loaded');
             console.log('📝 Exchange Step 2: Preparing token exchange request...');
-            
+
             const requestBody = new URLSearchParams({
                 client_id: appId,
                 client_secret: appSecret,
@@ -671,11 +717,11 @@ class AuthController {
             // Format 1: Nested array { data: [{ access_token, user_id, ... }] }
             // Format 2: Direct object { access_token, user_id, ... }
             let shortLivedData;
-            
+
             console.log('📝 Exchange Step 4: Parsing response...');
             console.log('📝 Exchange Step 4: Has data.data array?', shortLivedResponse.data.data && Array.isArray(shortLivedResponse.data.data));
             console.log('📝 Exchange Step 4: Has direct access_token?', !!shortLivedResponse.data.access_token);
-            
+
             if (shortLivedResponse.data.data && Array.isArray(shortLivedResponse.data.data)) {
                 console.log('📝 Exchange Step 4: Using nested array format');
                 shortLivedData = shortLivedResponse.data.data[0];
@@ -698,7 +744,7 @@ class AuthController {
             // ✅ Step 3: Exchange SHORT-LIVED token for LONG-LIVED token (60 days)
             // Required by Business Login - tokens expire after 1 hour without this step
             console.log('📝 Exchange Step 6: Exchanging for long-lived token...');
-            
+
             const longLivedResponse = await axios.get('https://graph.instagram.com/access_token', {
                 params: {
                     grant_type: 'ig_exchange_token',
@@ -711,7 +757,7 @@ class AuthController {
             console.log('📝 Exchange Step 7: Long-lived response:', JSON.stringify(longLivedResponse.data, null, 2));
 
             const longLivedData = longLivedResponse.data;
-            const expiresAt = new Date(Date.now() + (longLivedData.expires_in * 1000));
+            const expiresAt = dateUtils.add(dateUtils.now(), longLivedData.expires_in, 'seconds').toDate();
 
             console.log('🔐 Exchange Step 7: Token Exchange Complete:', {
                 userId: shortLivedData.user_id,
@@ -728,26 +774,26 @@ class AuthController {
                 expires_in: longLivedData.expires_in,
                 expires_at: expiresAt
             };
-            
+
             console.log('========== TOKEN EXCHANGE COMPLETE ==========\n');
             return result;
         } catch (error: any) {
-            const errorMsg = error.response?.data?.error_message || 
-                           error.response?.data?.message || 
-                           error.message || 
-                           'Unknown error';
-            
+            const errorMsg = error.response?.data?.error_message ||
+                error.response?.data?.message ||
+                error.message ||
+                'Unknown error';
+
             console.error('❌ ERROR in exchangeCodeForToken:', errorMsg);
             console.error('❌ Full error details:', {
                 message: error.message,
                 status: error.response?.status,
                 data: error.response?.data
             });
-            
+
             if (error.response?.data) {
                 console.error('📋 Instagram returned:', error.response.data);
             }
-            
+
             console.log('========== TOKEN EXCHANGE FAILED ==========\n');
             throw error;
         }
@@ -841,15 +887,17 @@ class AuthController {
                 data: {
                     id: user._id.toString(),
                     email: user.email,
-                    name: user.profile.name,
                     role: user.role,
+                    profile: user.profile,
                     primaryAccount: user.primaryAccount,
                     socialAccounts: user.socialAccounts.map(acc => ({
                         platform: acc.platform,
+                        platformId: acc.platformId,
                         username: acc.username,
                         displayName: acc.displayName,
                         followerCount: acc.followerCount,
-                        isPrimary: acc.isPrimary
+                        isPrimary: acc.isPrimary,
+                        rates: acc.rates
                     }))
                 },
                 message: 'User retrieved successfully'

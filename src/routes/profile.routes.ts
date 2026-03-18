@@ -34,9 +34,55 @@ router.get('/primary', profileController.getPrimaryAccount.bind(profileControlle
 router.post('/switch', profileController.switchPrimaryAccount.bind(profileController));
 
 /**
- * GET /api/v1/profile/primary/profile
- * Get primary account profile with real-time metrics
+ * GET /api/v1/profile/primary/content
+ * Get recent content from primary account
  */
-router.get('/primary/profile', profileController.getPrimaryProfile.bind(profileController));
+/**
+ * GET /api/v1/profile/primary/content
+ * Get recent content from primary account
+ */
+router.get('/primary/content', profileController.getPrimaryContent.bind(profileController));
+
+/**
+ * GET /api/v1/profile/primary/content/:mediaId/insights
+ * Get deep insights for a specific media item
+ */
+router.get('/primary/content/:mediaId/insights', profileController.getMediaInsights.bind(profileController));
+
+/**
+ * PATCH /api/v1/profile
+ * Update user profile details
+ */
+router.patch('/', profileController.updateProfile.bind(profileController));
+
+/**
+ * PATCH /api/v1/profile/rates
+ * Update deliverable rates for a specific connected platform
+ */
+router.patch('/rates', profileController.updateRates.bind(profileController));
+
+/**
+ * PATCH /api/v1/profile/verification
+ * Set verification status for profile or contact
+ */
+router.patch('/verification', profileController.setVerificationStatus.bind(profileController));
+
+/**
+ * POST /api/v1/profile/verify/send
+ * Send verification OTP
+ */
+router.post('/verify/send', profileController.sendVerificationOTP.bind(profileController));
+
+/**
+ * POST /api/v1/profile/verify/otp
+ * Verify OTP
+ */
+router.post('/verify/otp', profileController.verifyOTP.bind(profileController));
+
+/**
+ * PATCH /api/v1/profile/status
+ * Update account status
+ */
+router.patch('/status', profileController.updateStatus.bind(profileController));
 
 export default router;

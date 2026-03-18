@@ -10,7 +10,7 @@ import { ISocialMediaService, IUserMetrics, IMediaInsights, IMediaData, IAudienc
 class InstagramAPIService implements ISocialMediaService {
     readonly platform = 'INSTAGRAM';
     private apiBaseUrl = 'https://graph.instagram.com';
-    private apiVersion = 'v18.0';
+    private apiVersion = 'v22.0';
 
     getRateLimits() {
         return {
@@ -53,21 +53,34 @@ class InstagramAPIService implements ISocialMediaService {
         limit: number = 20,
         after?: string
     ): Promise<{ media: IMediaData[]; nextCursor?: string }> {
+        console.log(`[InstagramAPI] Fetching media for user: ${userId}, limit: ${limit}`);
         try {
             const paginationParam = after ? `&after=${after}` : '';
-            const endpoint = `${this.apiBaseUrl}/${this.apiVersion}/me/media?fields=id,caption,media_type,media_url,permalink,timestamp,like_count,comments_count&limit=${limit}${paginationParam}&access_token=${accessToken}`;
+            const endpoint = `${this.apiBaseUrl}/${this.apiVersion}/me/media?fields=id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count,video_views&limit=${limit}${paginationParam}&access_token=${accessToken}`;
 
             const response = await axios.get(endpoint);
+            const rawMedia = response.data.data || [];
 
-            const media = response.data.data.map((item: any) => ({
+            // Return basic media data only (Lazy loading insights)
+            const media = rawMedia.map((item: any) => ({
                 id: item.id,
                 caption: item.caption || '',
                 mediaType: item.media_type,
                 mediaUrl: item.media_url,
+                thumbnailUrl: item.thumbnail_url,
                 permalink: item.permalink,
                 timestamp: new Date(item.timestamp),
-                likeCount: item.like_count,
-                commentCount: item.comments_count,
+                likeCount: item.like_count || 0,
+                commentCount: item.comments_count || 0,
+                viewCount: item.video_views,
+                // These will be fetched lazily on click
+                reach: 0,
+                impressions: 0,
+                saves: 0,
+                shares: 0,
+                totalInteractions: 0,
+                views: 0,
+                mediaProductType: item.media_product_type
             }));
 
             return {
@@ -81,46 +94,102 @@ class InstagramAPIService implements ISocialMediaService {
     }
 
     /**
-     * Fetch insights for a specific media post
-     * Called when displaying post details
-     * Result cached in Redis for 5 minutes (changes frequently)
+     * Get insights for a specific media item (Lazy loaded on click)
      */
-    async getMediaInsights(mediaId: string, accessToken: string): Promise<IMediaInsights> {
+    async getMediaInsights(
+        userId: string,
+        accessToken: string,
+        mediaId: string,
+        mediaType: string,
+        followerCount?: number
+    ): Promise<Partial<IMediaData>> {
+        console.log(`[InstagramAPI] Fetching insights for media ID: ${mediaId} (${mediaType})`);
+        
+        let reach = 0;
+        let impressions = 0;
+        let saves = 0;
+        let shares = 0;
+        let totalInteractions = 0;
+        let views = 0;
+
         try {
-            const metrics = ['like_count', 'comments_count', 'shares_count', 'saved_count', 'impressions', 'reach'];
-            const fieldsParam = metrics.join(',');
+            // Updated Metric Strategy based on Meta v22.0 Documentation
+            // Unified 'views' metric is now preferred over 'impressions' and 'video_views'
+            let metrics = ['views', 'reach', 'total_interactions', 'saved'];
+            
+            // Note: 'shares' is common but let's be safe. 
+            // 'impressions' is deprecated/unsupported for Reels.
+            metrics.push('shares');
 
-            const endpoint = `${this.apiBaseUrl}/${this.apiVersion}/${mediaId}/insights?metric_type=ENGAGEMENT&fields=${fieldsParam}&access_token=${accessToken}`;
-
+            const endpoint = `${this.apiBaseUrl}/${this.apiVersion}/${mediaId}/insights?metric=${metrics.join(',')}&access_token=${accessToken}`;
             const response = await axios.get(endpoint);
+            
+            const insightsData = response.data.data;
+            if (Array.isArray(insightsData)) {
+                views = insightsData.find((i: any) => i.name === 'views')?.values[0]?.value || 0;
+                reach = insightsData.find((i: any) => i.name === 'reach')?.values[0]?.value || 0;
+                saves = insightsData.find((i: any) => i.name === 'saved')?.values[0]?.value || 0;
+                shares = insightsData.find((i: any) => i.name === 'shares')?.values[0]?.value || 0;
+                totalInteractions = insightsData.find((i: any) => i.name === 'total_interactions')?.values[0]?.value || 0;
+                
+                // Keep impressions for old posts if available, but it's being phased out
+                impressions = insightsData.find((i: any) => i.name === 'impressions')?.values[0]?.value || 0;
 
-            const insightData = response.data.data.reduce(
-                (acc: any, item: any) => {
-                    acc[item.name] = item.values[0]?.value || 0;
-                    return acc;
-                },
-                {}
-            );
-
-            // Calculate engagement rate = (likes + comments) / reach * 100
-            const engagementRate =
-                insightData.reach > 0
-                    ? ((insightData.like_count + insightData.comments_count) / insightData.reach) * 100
-                    : 0;
-
-            return {
-                likes: insightData.like_count,
-                comments: insightData.comments_count,
-                shares: insightData.shares_count || 0,
-                saves: insightData.saved_count || 0,
-                impressions: insightData.impressions,
-                reach: insightData.reach,
-                engagementRate: parseFloat(engagementRate.toFixed(2)),
-            };
-        } catch (error) {
-            console.error('Failed to fetch media insights:', error);
-            throw new Error('Instagram API error: Failed to fetch insights');
+                console.log(`[Metrics] ${mediaType} ${mediaId}: Views=${views}, Reach=${reach}, TotalInteractions=${totalInteractions}`);
+            }
+        } catch (err: any) {
+            console.error(`[Metrics Error] ${mediaType} ${mediaId} insights failed:`, err.response?.data || err.message);
+            
+            // Fallback for older API versions or restricted accounts: retry without 'views' if it fails
+            if (err.response?.status === 400) {
+                try {
+                    console.log(`[InstagramAPI] views metric failed for ${mediaId}, falling back to legacy impressions.`);
+                    const legacyMetrics = ['reach', 'total_interactions', 'shares', 'saved', 'impressions'];
+                    const legacyEndpoint = `${this.apiBaseUrl}/${this.apiVersion}/${mediaId}/insights?metric=${legacyMetrics.join(',')}&access_token=${accessToken}`;
+                    const legacyResponse = await axios.get(legacyEndpoint);
+                    
+                    const legacyData = legacyResponse.data.data;
+                    reach = legacyData.find((i: any) => i.name === 'reach')?.values[0]?.value || 0;
+                    impressions = legacyData.find((i: any) => i.name === 'impressions')?.values[0]?.value || 0;
+                    saves = legacyData.find((i: any) => i.name === 'saved')?.values[0]?.value || 0;
+                    shares = legacyData.find((i: any) => i.name === 'shares')?.values[0]?.value || 0;
+                    totalInteractions = legacyData.find((i: any) => i.name === 'total_interactions')?.values[0]?.value || 0;
+                } catch (retryErr) {
+                    console.error(`[Metrics Error] Triple fallback failed for ${mediaId}`);
+                }
+            }
         }
+
+        // --- CALCULATIONS (Moved from Frontend) ---
+        const interactions = totalInteractions || 0;
+        
+        // 1. Standard ER (By Reach)
+        let engagementRateStandard = '0.00';
+        if (reach > 0) {
+            const res = (interactions / reach) * 100;
+            engagementRateStandard = res > 1000 ? '999+' : res.toFixed(2);
+        } else if (followerCount && followerCount > 0) {
+            const res = (interactions / followerCount) * 100;
+            engagementRateStandard = res > 1000 ? '999+' : res.toFixed(2);
+        }
+
+        // 2. Efficiency ER (By Views)
+        let engagementRateEfficiency = '0.00';
+        if (views > 0) {
+            const res = (interactions / views) * 100;
+            engagementRateEfficiency = res > 1000 ? '999+' : res.toFixed(2);
+        }
+
+        return {
+            reach,
+            impressions,
+            saves,
+            shares,
+            totalInteractions,
+            views,
+            engagementRateStandard,
+            engagementRateEfficiency
+        };
     }
 
     /**

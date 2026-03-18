@@ -7,7 +7,7 @@ import { Request, Response } from 'express';
 import {
     callInstagramAPI,
     getInstagramAccessToken,
-    isInstagramTokenExpiringsoon
+    isInstagramTokenExpiringSoon
 } from '../services/instagram-token.helper';
 
 /**
@@ -82,7 +82,7 @@ export async function getInstagramProfile(req: Request, res: Response): Promise<
         );
 
         // Check token expiry
-        const tokenExpiringSoon = await isInstagramTokenExpiringsoon(
+        const tokenExpiringSoon = await isInstagramTokenExpiringSoon(
             userId as string,
             platformId as string
         );

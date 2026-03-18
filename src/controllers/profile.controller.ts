@@ -60,6 +60,9 @@ class ProfileController {
                 return;
             }
 
+            // Fetch user for status and verification
+            const user = await profileService.updateProfile(userId, {});
+
             res.json({
                 success: true,
                 data: {
@@ -70,6 +73,10 @@ class ProfileController {
                     profilePictureUrl: primaryAccount.profilePictureUrl,
                     followerCount: primaryAccount.followerCount,
                     accountConnectedAt: primaryAccount.accountConnectedAt,
+                    status: (user as any).status,
+                    verification: (user as any).verification,
+                    category: (user as any).profile.category,
+                    subCategories: (user as any).profile.subCategories,
                 },
                 message: 'Primary account fetched successfully',
             });
@@ -188,6 +195,277 @@ class ProfileController {
                 success: false,
                 error: 'GET_PROFILE_FAILED',
                 message: error.message || 'Failed to fetch profile',
+            });
+        }
+    }
+
+    /**
+     * GET /api/v1/creator/content
+     * Get recent content from primary account
+     */
+    async getPrimaryContent(req: Request, res: Response): Promise<void> {
+        console.log(`[ProfileController] getPrimaryContent called for user: ${(req as any).user?.id}`);
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'User not authenticated' });
+                return;
+            }
+
+            const primaryToken = await profileService.getPrimaryAccountToken(userId);
+            if (!primaryToken) {
+                res.status(404).json({
+                    success: false,
+                    error: 'NO_PRIMARY_ACCOUNT',
+                    message: 'No primary account configured',
+                });
+                return;
+            }
+
+            // Get platform-specific service
+            const service = socialMediaFactory.getService(primaryToken.platform);
+
+            // Fetch recent media
+            const { limit = 12, after } = req.query;
+            const content = await service.getUserMedia(
+                userId, 
+                primaryToken.accessToken, 
+                Number(limit), 
+                after as string
+            );
+
+            res.json({
+                success: true,
+                data: content,
+                message: 'Recent content fetched successfully',
+            });
+        } catch (error: any) {
+            console.error('Error in getPrimaryContent:', error);
+            res.status(500).json({
+                success: false,
+                error: 'GET_CONTENT_FAILED',
+                message: error.message || 'Failed to fetch content',
+            });
+        }
+    }
+
+    /**
+     * GET /api/v1/profile/primary/content/:mediaId/insights
+     * Get deep insights for a specific media item
+     */
+    async getMediaInsights(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            const { mediaId } = req.params;
+            const { mediaType } = req.query;
+
+            if (!mediaId || !mediaType) {
+                res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'mediaId and mediaType are required' });
+                return;
+            }
+
+            const insights = await profileService.getMediaInsights(userId, mediaId, mediaType as string);
+
+            res.json({
+                success: true,
+                data: insights,
+                message: 'Media insights fetched successfully',
+            });
+        } catch (error: any) {
+            console.error('Error in getMediaInsights:', error);
+            res.status(500).json({
+                success: false,
+                error: 'GET_INSIGHTS_FAILED',
+                message: error.message || 'Failed to fetch insights',
+            });
+        }
+    }
+
+    /**
+     * PATCH /api/v1/creator/profile
+     * Update user profile details
+     */
+    async updateProfile(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'User not authenticated' });
+                return;
+            }
+
+            const updatedUser = await profileService.updateProfile(userId, req.body);
+
+            res.json({
+                success: true,
+                data: {
+                    profile: updatedUser.profile,
+                    status: updatedUser.status,
+                    verification: updatedUser.verification
+                },
+                message: 'Profile updated successfully',
+            });
+        } catch (error: any) {
+            console.error('Error in updateProfile:', error);
+            res.status(500).json({
+                success: false,
+                error: 'UPDATE_PROFILE_FAILED',
+                message: error.message || 'Failed to update profile',
+            });
+        }
+    }
+    /**
+     * PATCH /api/v1/profile/rates
+     * Update deliverable rates for a specific platform
+     */
+    async updateRates(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'User not authenticated' });
+                return;
+            }
+
+            const { platform, platformId, rates } = req.body;
+            console.log(`[ProfileController] updateRates called for ${userId}. Platform: ${platform}, Items: ${rates?.length}`);
+
+            if (!platform || !platformId || !Array.isArray(rates)) {
+                res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'platform, platformId, and rates[] are required' });
+                return;
+            }
+
+            const updatedUser = await profileService.updateRates(userId, platform, platformId, rates);
+            const updatedAccount = updatedUser.socialAccounts.find(
+                (acc: any) => acc.platform === platform && acc.platformId === platformId
+            );
+
+            res.json({
+                success: true,
+                data: { rates: updatedAccount?.rates },
+                message: 'Rates updated successfully',
+            });
+        } catch (error: any) {
+            console.error('Error in updateRates:', error);
+            res.status(500).json({
+                success: false,
+                error: 'UPDATE_RATES_FAILED',
+                message: error.message || 'Failed to update rates',
+            });
+        }
+    }
+
+    /**
+     * PATCH /api/v1/profile/verification
+     * Set verification status for profile or contact
+     */
+    async setVerificationStatus(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            const { type, status } = req.body;
+
+            if (!type || status === undefined) {
+                res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'type and status are required' });
+                return;
+            }
+
+            const updatedUser = await profileService.setVerificationStatus(userId, type, status);
+
+            res.json({
+                success: true,
+                data: {
+                    verification: updatedUser.verification
+                },
+                message: 'Verification status updated successfully',
+            });
+        } catch (error: any) {
+            console.error('Error in setVerificationStatus:', error);
+            res.status(500).json({
+                success: false,
+                error: 'UPDATE_VERIFICATION_FAILED',
+                message: error.message || 'Failed to update verification',
+            });
+        }
+    }
+
+    /**
+     * PATCH /api/v1/profile/status
+     * Update user account status
+     */
+    async updateStatus(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            const { status } = req.body;
+
+            if (!status) {
+                res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'status is required' });
+                return;
+            }
+
+            const updatedUser = await profileService.updateStatus(userId, status);
+
+            res.json({
+                success: true,
+                data: {
+                    status: updatedUser.status
+                },
+                message: 'Account status updated successfully',
+            });
+        } catch (error: any) {
+            console.error('Error in updateStatus:', error);
+            res.status(500).json({
+                success: false,
+                error: 'UPDATE_STATUS_FAILED',
+                message: error.message || 'Failed to update status',
+            });
+        }
+    }
+    /**
+     * POST /api/v1/profile/verify/send
+     * Send OTP to email or mobile
+     */
+    async sendVerificationOTP(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            const { method, contactValue } = req.body;
+
+            if (!method || !contactValue) {
+                res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'method and contactValue are required' });
+                return;
+            }
+
+            const result = await profileService.sendVerificationOTP(userId, method, contactValue);
+            res.json(result);
+        } catch (error: any) {
+            console.error('Error in sendVerificationOTP:', error);
+            res.status(500).json({
+                success: false,
+                error: 'SEND_OTP_FAILED',
+                message: error.message || 'Failed to send OTP',
+            });
+        }
+    }
+
+    /**
+     * POST /api/v1/profile/verify/otp
+     * Verify OTP for email or mobile
+     */
+    async verifyOTP(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            const { method, otpCode } = req.body;
+
+            if (!method || !otpCode) {
+                res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'method and otpCode are required' });
+                return;
+            }
+
+            const result = await profileService.verifyContactOTP(userId, method, otpCode);
+            res.json(result);
+        } catch (error: any) {
+            console.error('Error in verifyOTP:', error);
+            res.status(500).json({
+                success: false,
+                error: 'VERIFY_OTP_FAILED',
+                message: error.message || 'Failed to verify OTP',
             });
         }
     }

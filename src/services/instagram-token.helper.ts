@@ -118,7 +118,7 @@ export async function callInstagramAPI(
  * @param platformId - Instagram user ID (account ID)
  * @returns true if token expires within 7 days, false otherwise
  */
-export async function isInstagramTokenExpiringsoon(userId: string, platformId: string): Promise<boolean> {
+export async function isInstagramTokenExpiringSoon(userId: string, platformId: string): Promise<boolean> {
     try {
         const user = await User.findById(userId);
         
@@ -150,5 +150,5 @@ export async function isInstagramTokenExpiringsoon(userId: string, platformId: s
 export default {
     getInstagramAccessToken,
     callInstagramAPI,
-    isInstagramTokenExpiringsoon
+    isInstagramTokenExpiringSoon
 };

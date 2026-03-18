@@ -4,7 +4,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import crypto from 'crypto';
+import securityService from './security.service';
 
 interface InstagramUserInfo {
     user_id: string;
@@ -31,16 +31,9 @@ interface InstagramMediaItem {
 class InstagramService {
     private axiosInstance: AxiosInstance;
     private apiVersion: string;
-    private encryptionKey: string;
 
     constructor() {
         this.apiVersion = process.env.INSTAGRAM_API_VERSION || 'v18.0';
-        this.encryptionKey = process.env.ENCRYPTION_KEY || 'default-encryption-key-min-32-chars';
-
-        // Validate encryption key length (minimum 32 chars for AES-256)
-        if (this.encryptionKey.length < 32) {
-            console.warn('⚠️  ENCRYPTION_KEY should be at least 32 characters for AES-256');
-        }
 
         // Initialize axios instance with base URL
         this.axiosInstance = axios.create({
@@ -50,59 +43,17 @@ class InstagramService {
     }
 
     /**
-     * Encrypt sensitive data (like tokens) using AES-256
-     */
-    private encrypt(data: string): string {
-        try {
-            // Use first 32 chars of encryption key for AES-256
-            const key = Buffer.from(this.encryptionKey.substring(0, 32).padEnd(32, '0'));
-            const iv = crypto.randomBytes(16);
-            
-            const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-            let encrypted = cipher.update(data, 'utf8', 'hex');
-            encrypted += cipher.final('hex');
-            
-            // Return IV + encrypted data
-            return iv.toString('hex') + ':' + encrypted;
-        } catch (error) {
-            console.error('❌ Encryption error:', error);
-            throw new Error('Failed to encrypt sensitive data');
-        }
-    }
-
-    /**
-     * Decrypt sensitive data (like tokens) using AES-256
-     */
-    private decrypt(encrypted: string): string {
-        try {
-            const [iv, data] = encrypted.split(':');
-            const key = Buffer.from(this.encryptionKey.substring(0, 32).padEnd(32, '0'));
-            
-            const decipher = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(iv, 'hex'));
-            let decrypted = decipher.update(data, 'hex', 'utf8');
-            decrypted += decipher.final('utf8');
-            
-            return decrypted;
-        } catch (error) {
-            console.error('❌ Decryption error:', error);
-            throw new Error('Failed to decrypt sensitive data');
-        }
-    }
-
-    /**
      * Encrypt token for storage in database
      */
     encryptToken(token: string): string {
-        console.log('🔐 Encrypting token for storage...');
-        return this.encrypt(token);
+        return securityService.encryptToken(token);
     }
 
     /**
      * Decrypt token from database
      */
     decryptToken(encryptedToken: string): string {
-        console.log('🔐 Decrypting token from storage...');
-        return this.decrypt(encryptedToken);
+        return securityService.decryptToken(encryptedToken);
     }
 
     /**
