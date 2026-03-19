@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import axios from 'axios';
 import User, { UserRole, Platform } from '../models/User';
-import { generateToken } from '../middleware/jwt.middleware';
+import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../middleware/jwt.middleware';
 import profileService from '../services/profile.service';
 import instagramService from '../services/instagram.service';
 import { dateUtils } from '../utils/date.utils';
@@ -273,21 +273,27 @@ class AuthController {
             console.log('✅ Step 5: Database operations complete');
             console.log('📝 Step 6: Generating JWT token...');
 
-            // Step 4: Generate JWT token
-            const token = generateToken(
+            // Step 4: Generate JWT tokens
+            const accessToken = generateAccessToken(
                 user._id.toString(),
                 user.email,
                 user.role
             );
+            const refreshToken = generateRefreshToken(user._id.toString());
 
-            console.log('✅ Step 6: JWT token generated:', `${token.substring(0, 20)}...`);
+            // Save refresh token to user for persistence
+            user.refreshToken = refreshToken;
+            await user.save();
+
+            console.log('✅ Step 6: JWT tokens generated');
             console.log('📝 Step 7: Sending success response...');
 
             // Step 5: Return success response
             res.json({
                 success: true,
                 data: {
-                    token,
+                    token: accessToken,
+                    refreshToken,
                     user: {
                         id: user._id.toString(),
                         email: user.email,
@@ -630,20 +636,24 @@ class AuthController {
         }
 
         console.log('✅ Step 6: User in database ready');
-        console.log('📝 Step 7: Generating JWT token...');
-
-        // Step 4: Generate JWT token
-        const token = generateToken(
+        // Step 4: Generate JWT tokens
+        const accessToken = generateAccessToken(
             user._id.toString(),
             user.email,
             user.role
         );
+        const refreshToken = generateRefreshToken(user._id.toString());
 
-        console.log('✅ Step 6: JWT token generated:', `${token.substring(0, 20)}...`);
+        // Save refresh token to user for persistence
+        user.refreshToken = refreshToken;
+        await user.save();
+
+        console.log('✅ Step 6: JWT tokens generated');
         console.log('========== CALLBACK PROCESSOR COMPLETE ==========\n');
 
         return {
-            token,
+            token: accessToken,
+            refreshToken,
             user: {
                 id: user._id.toString(),
                 email: user.email,
@@ -806,42 +816,62 @@ class AuthController {
      */
 
     /**
-     * GET /auth/refresh
-     * Refresh JWT token
+     * POST /auth/refresh
+     * Refresh JWT token using a Refresh Token
      */
     async refreshToken(req: Request, res: Response): Promise<void> {
         try {
-            const userId = (req as any).user?.id;
+            const { refreshToken } = req.body;
 
-            if (!userId) {
+            if (!refreshToken) {
+                res.status(400).json({
+                    success: false,
+                    error: 'MISSING_REFRESH_TOKEN',
+                    message: 'Refresh token is required'
+                });
+                return;
+            }
+
+            // Verify refresh token
+            const decoded = verifyRefreshToken(refreshToken);
+            if (!decoded || !decoded.id) {
                 res.status(401).json({
                     success: false,
-                    error: 'UNAUTHORIZED',
-                    message: 'User not authenticated'
+                    error: 'INVALID_REFRESH_TOKEN',
+                    message: 'Invalid or expired refresh token'
                 });
                 return;
             }
 
-            const user = await User.findById(userId);
+            const user = await User.findById(decoded.id);
 
-            if (!user) {
-                res.status(404).json({
+            if (!user || user.refreshToken !== refreshToken) {
+                res.status(401).json({
                     success: false,
-                    error: 'USER_NOT_FOUND',
-                    message: 'User not found'
+                    error: 'REFRESH_TOKEN_MISMATCH',
+                    message: 'Refresh token is invalid'
                 });
                 return;
             }
 
-            const token = generateToken(
+            // Generate new tokens
+            const newAccessToken = generateAccessToken(
                 user._id.toString(),
                 user.email,
                 user.role
             );
+            
+            // Optional: Rotate refresh token
+            const newRefreshToken = generateRefreshToken(user._id.toString());
+            user.refreshToken = newRefreshToken;
+            await user.save();
 
             res.json({
                 success: true,
-                data: { token },
+                data: { 
+                    token: newAccessToken,
+                    refreshToken: newRefreshToken
+                },
                 message: 'Token refreshed successfully'
             });
         } catch (error) {
@@ -895,6 +925,7 @@ class AuthController {
                         platformId: acc.platformId,
                         username: acc.username,
                         displayName: acc.displayName,
+                        profilePictureUrl: acc.profilePictureUrl,
                         followerCount: acc.followerCount,
                         isPrimary: acc.isPrimary,
                         rates: acc.rates
@@ -914,13 +945,26 @@ class AuthController {
 
     /**
      * POST /auth/logout
-     * Logout user (client-side token deletion)
+     * Logout user
      */
-    logout(req: Request, res: Response): void {
-        res.json({
-            success: true,
-            message: 'Logged out successfully. Please delete the token on client side.'
-        });
+    async logout(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = (req as any).user?.id;
+            if (userId) {
+                await User.findByIdAndUpdate(userId, { $unset: { refreshToken: 1 } });
+            }
+
+            res.json({
+                success: true,
+                message: 'Logged out successfully'
+            });
+        } catch (error) {
+            console.error('Error during logout:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Logout failed'
+            });
+        }
     }
 }
 

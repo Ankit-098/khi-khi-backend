@@ -355,10 +355,10 @@ router.post('/instagram/callback', async (req, res) => {
     }
 });
 
-// GET /auth/refresh
-// Refresh JWT token
-// Requires: Authorization header with JWT
-router.get('/refresh', authenticateJWT, async (req, res) => {
+// POST /auth/refresh
+// Refresh JWT token using a Refresh Token
+// Body: { refreshToken: string }
+router.post('/refresh', async (req, res) => {
     await authController.refreshToken(req, res);
 });
 

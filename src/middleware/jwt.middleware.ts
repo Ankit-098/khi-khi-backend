@@ -127,9 +127,9 @@ export const authorize = (requiredRoles: string[]) => {
 };
 
 /**
- * Generate JWT token for user
+ * Generate Access Token (Short-lived)
  */
-export const generateToken = (userId: string, email: string, role: string): string => {
+export const generateAccessToken = (userId: string, email: string, role: string): string => {
     const payload = {
         id: userId,
         email,
@@ -138,8 +138,40 @@ export const generateToken = (userId: string, email: string, role: string): stri
 
     const secret = process.env.JWT_SECRET || 'secret';
     const options: any = {
-        expiresIn: process.env.JWT_EXPIRES_IN || '7d'
+        expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '1h' // default 1 hour
     };
 
     return jwt.sign(payload, secret, options);
+};
+
+/**
+ * Generate Refresh Token (Long-lived)
+ */
+export const generateRefreshToken = (userId: string): string => {
+    const payload = { id: userId };
+    const secret = process.env.JWT_REFRESH_SECRET || 'refresh_secret_change_me';
+    const options: any = {
+        expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' // default 30 days
+    };
+
+    return jwt.sign(payload, secret, options);
+};
+
+/**
+ * Verify Refresh Token
+ */
+export const verifyRefreshToken = (token: string): any => {
+    try {
+        const secret = process.env.JWT_REFRESH_SECRET || 'refresh_secret_change_me';
+        return jwt.verify(token, secret);
+    } catch (error) {
+        return null;
+    }
+};
+
+/**
+ * LEGACY Support - Generate standard token
+ */
+export const generateToken = (userId: string, email: string, role: string): string => {
+    return generateAccessToken(userId, email, role);
 };

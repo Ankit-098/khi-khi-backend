@@ -72,6 +72,8 @@ class ProfileController {
                     displayName: primaryAccount.displayName,
                     profilePictureUrl: primaryAccount.profilePictureUrl,
                     followerCount: primaryAccount.followerCount,
+                    avgReach: primaryAccount.avgReach || '0',
+                    engagementRate: primaryAccount.engagementRate || '0.0%',
                     accountConnectedAt: primaryAccount.accountConnectedAt,
                     status: (user as any).status,
                     verification: (user as any).verification,
@@ -138,6 +140,7 @@ class ProfileController {
                     platformId: switchedAccount.platformId,
                     username: switchedAccount.username,
                     displayName: switchedAccount.displayName,
+                    profilePictureUrl: switchedAccount.profilePictureUrl,
                     followerCount: switchedAccount.followerCount,
                     isPrimary: switchedAccount.isPrimary,
                 },
@@ -234,9 +237,19 @@ class ProfileController {
                 after as string
             );
 
+            // Trigger background update of aggregated metrics (ER, Avg Reach)
+            await profileService.updateAccountAggregates(userId, primaryToken.platform, primaryToken.platformId);
+
+            // Fetch the updated account info to return fresh metrics
+            const updatedAccount = await profileService.getPrimaryAccount(userId);
+
             res.json({
                 success: true,
                 data: content,
+                metrics: updatedAccount ? {
+                    avgReach: updatedAccount.avgReach,
+                    engagementRate: updatedAccount.engagementRate
+                } : undefined,
                 message: 'Recent content fetched successfully',
             });
         } catch (error: any) {

@@ -138,7 +138,7 @@ class ProfileService {
      * Get access token of primary account
      * Used by API calls to fetch fresh data
      */
-    async getPrimaryAccountToken(userId: string): Promise<{ platform: string; accessToken: string } | null> {
+    async getPrimaryAccountToken(userId: string): Promise<{ platform: string; platformId: string; accessToken: string } | null> {
         try {
             const primaryAccount = await this.getPrimaryAccount(userId);
             if (!primaryAccount) {
@@ -147,6 +147,7 @@ class ProfileService {
 
             return {
                 platform: primaryAccount.platform,
+                platformId: primaryAccount.platformId,
                 accessToken: securityService.decryptToken(primaryAccount.accessToken),
             };
         } catch (error) {
@@ -372,6 +373,94 @@ class ProfileService {
             verification: user.verification,
             message: 'Contact verified successfully'
         };
+    }
+    /**
+     * Update account aggregated metrics (Avg Reach, Engagement Rate)
+     * Fetches recent media and stores calculated averages in the User model
+     */
+    async updateAccountAggregates(userId: string, platform: string, platformId: string): Promise<void> {
+        try {
+            console.log(`[ProfileService] Updating aggregates for ${userId} (${platform})`);
+            
+            const primaryToken = await this.getPrimaryAccountToken(userId);
+            if (!primaryToken) return;
+
+            const fromFactory = require('./socialMediaFactory').default;
+            const service = fromFactory.getService(platform);
+
+            // Fetch recent 12 media items to calculate averages
+            // Fetch recent 12 media items
+            const { media } = await service.getUserMedia(userId, primaryToken.accessToken, 12);
+            
+            if (!media || media.length === 0) {
+                console.log('[ProfileService] No media found for aggregate update');
+                return;
+            }
+
+            const user = await User.findById(userId);
+            if (!user) return;
+
+            const account = user.socialAccounts.find(
+                (acc: any) => acc.platform === platform && acc.platformId === platformId
+            );
+            if (!account) return;
+
+            const followerCount = account.followerCount || 0;
+
+            // Fetch deep insights for the first 6 items to get real interactions (likes+comments+shares+saves) and Reach
+            // We do this because basic getUserMedia often has 0 likes/comments for certain types of accounts
+            const insightProms = media.slice(0, 6).map((m: any) => 
+                service.getMediaInsights(userId, primaryToken.accessToken, m.id, m.mediaType, followerCount)
+                    .catch(() => ({ totalInteractions: 0, reach: 0, views: 0 }))
+            );
+            const insights = await Promise.all(insightProms);
+
+            // Calculate Metrics based on Insights (Most accurate)
+            let totalInteractions = 0;
+            let totalReach = 0;
+            let countWithData = 0;
+
+            insights.forEach((ins: any) => {
+                const interactions = ins.totalInteractions || 0;
+                const reach = ins.reach || ins.views || 0;
+                
+                if (interactions > 0 || reach > 0) {
+                    totalInteractions += interactions;
+                    totalReach += reach;
+                    countWithData++;
+                }
+            });
+
+            // Fallback to basic counts if no insights or data
+            if (countWithData === 0) {
+                totalInteractions = media.reduce((sum: number, m: any) => sum + (m.likeCount || 0) + (m.commentCount || 0), 0);
+                totalReach = media.reduce((sum: number, m: any) => sum + (m.viewCount || m.reach || 0), 0);
+                countWithData = media.length;
+            }
+
+            const avgInteractions = totalInteractions / countWithData;
+            const avgReachVal = totalReach / countWithData;
+
+            // Calculate Engagement Rate (Standard for this app: Interactions / Reach)
+            const divisor = avgReachVal > 0 ? avgReachVal : (followerCount > 0 ? followerCount : 1);
+            const er = (avgInteractions / divisor) * 100;
+            
+            console.log(`[ProfileService] totalInteractions: ${totalInteractions}, avgReach: ${avgReachVal}, ER: ${er}`);
+
+            // Formatter
+            const formatReach = (val: number) => {
+                if (val >= 1000) return (val / 1000).toFixed(1) + 'k';
+                return Math.floor(val).toString();
+            };
+
+            // Update Account
+            account.engagementRate = (er > 1000 ? '999' : er.toFixed(1)) + '%';
+            account.avgReach = formatReach(avgReachVal);
+            user.markModified('socialAccounts');
+            await user.save();
+        } catch (error) {
+            console.error('[ProfileService] Error updating aggregates:', error);
+        }
     }
 }
 

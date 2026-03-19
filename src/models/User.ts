@@ -41,7 +41,7 @@ export enum DeliverableType {
     STORY = 'STORY',
     REEL = 'REEL',
     INSTA_CAROUSEL = 'INSTA_CAROUSEL',
-    
+
     // YouTube
     DEDICATED_VIDEO = 'DEDICATED_VIDEO',
     INTEGRATED_SHOUTOUT = 'INTEGRATED_SHOUTOUT',
@@ -88,6 +88,8 @@ export interface ISocialAccount {
     accountConnectedAt: Date;
     lastLogin?: Date;              // Track last login for this specific account
     isPrimary: boolean;            // True if this is the primary account
+    avgReach?: string;             // Calculated metric: "12.5k", "800"
+    engagementRate?: string;       // Calculated metric: "4.2%", "0.8%"
     rates?: IDeliverablePricing[]; // Pricing matrix for this specific account
 }
 
@@ -95,7 +97,7 @@ export interface ISocialAccount {
  * Instagram Account Details Interface (Legacy)
  * For backward compatibility - now uses ISocialAccount
  */
-export interface IInstagramAccount extends ISocialAccount {}
+export interface IInstagramAccount extends ISocialAccount { }
 
 /**
  * User Document Interface
@@ -135,6 +137,7 @@ export interface IUser extends Document {
         lastMetricsUpdate?: Date;  // Track when metrics were last fetched from API
     };
     lastLogin?: Date;
+    refreshToken?: string; // Top-level refresh token for the user session
     createdAt: Date;
     updatedAt: Date;
 }
@@ -182,6 +185,8 @@ const SocialAccountSchema: Schema = new Schema({
         default: false,
         index: true
     },
+    avgReach: { type: String, default: '0' },
+    engagementRate: { type: String, default: '0.0%' },
     rates: [{
         type: { type: String, enum: Object.values(DeliverableType), required: true },
         minPrice: { type: Number, required: true },
@@ -211,10 +216,10 @@ const UserSchema: Schema = new Schema({
         country: { type: String },
         state: { type: String },
         city: { type: String },
-        contactPrivacy: { 
-            type: String, 
-            enum: ['EVERYONE', 'ON_REQUEST'], 
-            default: 'ON_REQUEST' 
+        contactPrivacy: {
+            type: String,
+            enum: ['EVERYONE', 'ON_REQUEST'],
+            default: 'ON_REQUEST'
         },
         category: {
             type: String,
@@ -243,6 +248,7 @@ const UserSchema: Schema = new Schema({
     socialMetrics: {
         lastMetricsUpdate: { type: Date }
     },
+    refreshToken: { type: String }, // Session refresh token
     lastLogin: { type: Date }
 }, { timestamps: true });
 
@@ -252,7 +258,7 @@ UserSchema.index({ 'socialAccounts.username': 1 });
 UserSchema.index({ role: 1, createdAt: -1 });
 
 // Pre-save middleware to sync primaryAccount convenience field
-UserSchema.pre('save', function(next) {
+UserSchema.pre('save', function (next) {
     const doc = this as any;
     if (doc.socialAccounts && Array.isArray(doc.socialAccounts)) {
         const primarySocial = doc.socialAccounts.find((acc: any) => acc.isPrimary);
